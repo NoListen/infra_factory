@@ -1,16 +1,16 @@
 # VLA模型接口框架
 
-统一的VLA (Vision-Language-Action) 模型接口框架，支持AReaL、RLinf、Verl三个训练框架，用于NavSim和Bench2Drive等驾驶环境的在线强化学习训练。
+统一的VLA (Vision-Language-Action) 模型接口框架，支持AReaL、RLinf、Verl、siiRL四个训练框架，用于NavSim和Bench2Drive等驾驶环境的在线强化学习训练。
 
 ## 项目结构
 
 ```
 infra_factory/
 ├── docs/                           # 文档目录
-│   ├── 01_framework_comparison.md  # 框架对比分析
+│   ├── 01_framework_comparison.md  # 四框架对比分析（含siiRL）
 │   ├── 02_model_integration_guide.md  # 模型整合指南
 │   ├── 03_async_training_analysis.md  # 异步训练分析
-│   └── 04_online_rl_interfaces.md   # 在线RL接口分析
+│   └── 04_online_rl_interfaces.md   # 在线RL接口分析（含siiRL）
 │
 ├── vla_models/                     # VLA模型接口包
 │   ├── __init__.py                 # 包入口
@@ -27,6 +27,7 @@ infra_factory/
 ├── AReaL/                          # AReaL框架（子模块）
 ├── RLinf/                          # RLinf框架（子模块）
 ├── verl/                           # Verl框架（子模块）
+├── siiRL/                          # siiRL框架（子模块）
 └── README.md                       # 本文件
 ```
 
@@ -34,10 +35,11 @@ infra_factory/
 
 ### 1. 框架对比分析 (`docs/01_framework_comparison.md`)
 
-三个训练框架的详细对比：
+四个训练框架的详细对比：
 - **AReaL**: 彻底的异步设计，适合在线RL和高频环境交互
 - **RLinf**: 混合引擎+配置驱动，适合快速实验
 - **Verl**: Ray分布式框架，适合大规模训练
+- **siiRL**: 多控制器DAG架构，专为VLA和大规模训练设计
 
 ### 2. 模型整合指南 (`docs/02_model_integration_guide.md`)
 
@@ -45,6 +47,7 @@ infra_factory/
 - AReaL接口要求
 - RLinf配置方式
 - Verl DataProto协议
+- siiRL DAG Worker接口
 - 统一VLA接口设计
 
 ### 3. 异步训练分析 (`docs/03_async_training_analysis.md`)
@@ -61,7 +64,28 @@ AReaL异步训练移植到Verl的可行性分析：
 - AReaL：完善的异步环境接口
 - RLinf：进程级并行，机器人优化
 - Verl：实验性支持
+- siiRL：DAG架构的异步VLA接口
 - NavSim/Bench2Drive适配器设计
+
+## 框架对比速查
+
+| 特性 | AReaL | RLinf | Verl | siiRL |
+|------|-------|-------|------|-------|
+| **核心理念** | 异步设计 | 混合引擎 | Ray分布式 | 多控制器DAG |
+| **异步支持** | asyncio | 进程级 | Ray | Ray+异步推理 |
+| **VLA支持** | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
+| **分布式** | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
+| **工作流** | 类定义 | 配置 | 训练器 | DAG函数 |
+| **扩展性** | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐（最佳）|
+
+### VLA训练推荐排名
+
+| 排名 | 框架 | 主要理由 |
+|------|------|----------|
+| 1️⃣ | **siiRL** | DAG架构、SRPO算法、异步推理 |
+| 2️⃣ | **AReaL** | 异步训练、Agent交互 |
+| 3️⃣ | **RLinf** | 已有VLA支持、快速实验 |
+| 4️⃣ | **Verl** | 大规模训练能力 |
 
 ## VLA模型接口包
 
@@ -172,52 +196,30 @@ pytest tests/test_interface.py -v
 pytest tests/ --cov=vla_models --cov-report=html
 ```
 
-### 测试覆盖
-
-- ✅ VLAInterface接口测试
-- ✅ VLAForDriving驾驶接口测试
-- ✅ 模型注册机制测试
-- ✅ 环境适配器测试
-- ✅ 配置管理测试
-
 ## 快速开始
 
 ### 1. 定义VLA模型
 
 ```python
 # my_vla_model.py
-from vla_models import VLAForDriving
-from vla_models import register_vla_model, register_framework_adapter
+from vla_models import VLAForDriving, register_vla_model
 
 @register_vla_model("my_driving_vla")
 class MyDrivingVLA(VLAForDriving):
     def __init__(self, model_path, **kwargs):
-        # 加载预训练模型
-        from transformers import AutoModel
-
-        self.model = AutoModel.from_pretrained(model_path)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-        self.processor = AutoProcessor.from_pretrained(model_path)
+        self.model = load_model(model_path)
+        self.tokenizer = load_tokenizer(model_path)
 
     def encode_text(self, text, max_length=None):
         return self.tokenizer(text, max_length=max_length, return_tensors="pt")
 
     def encode_image(self, images, size=None):
-        return self.processor(images, return_tensors="pt")
-
-    def forward(self, input_ids, attention_mask, pixel_values=None, **kwargs):
-        return self.model(input_ids, attention_mask, pixel_values)
+        return image_processor(images)
 
     def predict_waypoints(self, text, images, num_waypoints=5, **kwargs):
         inputs = self.encode_multimodal(text, images)
-        outputs = self.forward(**inputs)
-        # 解析输出为路点坐标
-        waypoints = self._parse_waypoints(outputs)
-        return waypoints
-
-    def waypoints_to_controls(self, waypoints, current_state):
-        # 实现pure pursuit或Stanley控制器
-        return pure_pursuit_control(waypoints, current_state)
+        outputs = self.model.generate(**inputs)
+        return parse_waypoints(outputs)
 ```
 
 ### 2. 注册框架适配器
@@ -226,23 +228,14 @@ class MyDrivingVLA(VLAForDriving):
 # adapters.py
 from vla_models import register_framework_adapter
 
-# AReaL适配器
-@register_framework_adapter("areal", "my_driving_vla")
-def areal_adapter(model_config, engine_config):
+# siiRL适配器
+@register_framework_adapter("siirl", "my_driving_vla")
+def siirl_adapter(cfg):
     from my_vla_model import MyDrivingVLA
-    from areal.models import MyVLAForAReaL
+    from siirl.models import MyVLAForSiirl
 
-    base_model = MyDrivingVLA(**model_config)
-    return MyVLAForAReaL(base_model, **engine_config)
-
-# RLinf适配器
-@register_framework_adapter("rlinf", "my_driving_vla")
-def rlinf_adapter(cfg):
-    from my_vla_model import MyDrivingVLA
-    from rlinf.models import MyVLAForRLinf
-
-    base_model = MyDrivingVLA(model_path=cfg.model.model_path)
-    return MyVLAForRLinf(base_model, cfg)
+    base_model = MyDrivingVLA(cfg.model.model_path)
+    return MyVLAForSiirl(base_model, cfg)
 ```
 
 ### 3. 配置文件
@@ -251,74 +244,47 @@ def rlinf_adapter(cfg):
 # config/my_driving_vla.yaml
 model:
   name: "my_driving_vla"
-  version: "1.0.0"
   checkpoint_path: "/path/to/checkpoint"
 
   vision_encoder:
     type: "clip"
     pretrained_path: "/path/to/vision_encoder"
-    freeze: false
-    image_size: [224, 224]
 
   language_model:
     base_model: "gpt2"
     lora_enabled: true
-    lora_r: 64
 
   policy_head:
     type: "waypoint"
-    action_dim: 15  # 5 waypoints * 3
+    action_dim: 15
 
 training:
   optimizer:
     type: "adamw"
     lr: 1e-4
 
-  param_groups:
-    vision_encoder: 1e-5
-    language_model: 1e-4
-    policy_head: 1e-3
-
 environment:
   type: "navsim"
-  observation:
-    camera:
-      enabled: true
-      width: 224
-      height: 224
-  action:
-    type: "waypoint"
-    num_waypoints: 5
 
 reward:
   type: "driving"
   weights:
     collision: -10.0
     success: 10.0
-    progress: 1.0
 ```
 
 ### 4. 使用示例
 
 ```python
-# train.py
 from vla_models import create_model, VLAConfig
 
 # 加载配置
 config = VLAConfig.from_yaml("config/my_driving_vla.yaml")
 
-# 创建基础模型
+# 创建模型
 model = create_model("my_driving_vla", model_path=config.model.checkpoint_path)
 
-# 或者创建框架适配的模型
-areal_model = create_model(
-    "my_driving_vla",
-    framework="areal",
-    model_config=config.model,
-    engine_config=config.training
-)
-
-# 使用模型进行预测
+# 使用模型
 from vla_models import VLAInput
 
 inputs = VLAInput(
@@ -338,10 +304,14 @@ controls = model.waypoints_to_controls(waypoints, current_state)
 - AReaL适配器：`AReaLNavSimAdapter`
 - RLinf适配器：`RLinfNavSimAdapter`
 - Verl适配器：`VerlNavSimAdapter`
+- siiRL适配器：`NavSimVLAAdapter`（原生异步支持）
 
 ### Bench2Drive
 
-- 适配器待实现（接口已定义）
+- AReaL适配器：`AReaLBench2DriveAdapter`
+- RLinf适配器：`RLinfBench2DriveAdapter`
+- Verl适配器：`VerlBench2DriveAdapter`
+- siiRL适配器：`Bench2DriveVLAAdapter`（原生异步支持）
 
 ## 扩展性
 
@@ -355,9 +325,6 @@ controls = model.waypoints_to_controls(waypoints, current_state)
 @register_env_adapter("new_env", "areal")
 class AReaLNewEnvAdapter:
     async def ainitialize(self):
-        pass
-
-    async def aexecute(self, tool_name, tool_args):
         pass
 ```
 
@@ -380,13 +347,6 @@ pytest tests/ -v --cov=vla_models --cov-report=html
 # 查看覆盖率报告
 open htmlcov/index.html
 ```
-
-## 下一步
-
-1. 实现真实的VLA模型
-2. 为NavSim/Bench2Drive创建完整的环境适配器
-3. 集成到AReaL/RLinf/Verl训练流程
-4. 编写训练脚本和示例
 
 ## 贡献
 
